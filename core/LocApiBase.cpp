@@ -30,7 +30,7 @@
 /*
 Changes from Qualcomm Innovation Center are provided under the following license:
 
-Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted (subject to the limitations in the
@@ -74,6 +74,10 @@ IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <log_util.h>
 #include <LocContext.h>
 #include <loc_misc_utils.h>
+
+#ifdef PTP_SUPPORTED
+#include <gptp_helper.h>
+#endif
 
 namespace loc_core {
 
@@ -373,11 +377,11 @@ void LocApiBase::reportPosition(UlpLocation& location,
 {
     // print the location info before delivering
     LOC_LOGd("\n  flags: 0x%x\n  source: %d\n  latitude: %f\n  longitude: %f\n  "
-             "altitude: %f\n  speed: %f\n  bearing: %f\n  accuracy: %f\n  "
-             "timestamp: %" PRId64 "\n  "
-             "session status: %d\n  technology mask: 0x%x\n  time bias unc %f msec\n  "
-             "SV used in fix (gps/glo/bds/gal/qzss/navic) : \n"
-             "(0x%" PRIx64 "/0x%" PRIx64 "/0x%" PRIx64 "/0x%" PRIx64 "/0x%" PRIx64 "/0x%" PRIx64 ")",
+           "altitude: %f\n  speed: %f\n  bearing: %f\n  accuracy: %f\n  "
+           "timestamp: %" PRId64 "\n  "
+           "session status: %d\n  technology mask: 0x%x\n  time bias unc %f msec\n  "
+           "SV used in fix (gps/glo/bds/gal/qzss/navic) : \n"
+           "(0x%" PRIx64 "/0x%" PRIx64 "/0x%" PRIx64 "/0x%" PRIx64 "/0x%" PRIx64 "/0x%" PRIx64 ")",
              location.gpsLocation.flags, location.position_source,
              location.gpsLocation.latitude, location.gpsLocation.longitude,
              location.gpsLocation.altitude, location.gpsLocation.speed,
@@ -1017,7 +1021,7 @@ DEFAULT_IMPL()
 void LocApiBase::configOsnmaEnablement(bool /*enable*/, LocApiResponse* /*adapterResponse*/)
 DEFAULT_IMPL()
 
-int64_t ElapsedRealtimeEstimator::getElapsedRealtimeEstimateNanos(int64_t curDataTimeNanos,
+int64_t RealtimeEstimator::getElapsedRealtimeEstimateNanos(int64_t curDataTimeNanos,
             bool isCurDataTimeTrustable, int64_t tbfNanos) {
     //The algorithm works follow below steps:
     //When isCurDataTimeTrustable is meet (means Modem timestamp is already stable),
@@ -1069,7 +1073,7 @@ int64_t ElapsedRealtimeEstimator::getElapsedRealtimeEstimateNanos(int64_t curDat
     return (sinceBootTimeNanos - currentTravelTimeNanos);
 }
 
-void ElapsedRealtimeEstimator::reset() {
+void RealtimeEstimator::reset() {
     mCurrentClockDiff = 0;
     mPrevDataTimeNanos = 0;
     mPrevUtcTimeNanos = 0;
@@ -1079,7 +1083,7 @@ void ElapsedRealtimeEstimator::reset() {
     memset(&mTimePairMeasReport, 0, sizeof(mTimePairMeasReport));
 }
 
-int64_t ElapsedRealtimeEstimator::getElapsedRealtimeQtimer(int64_t qtimerTicksAtOrigin) {
+int64_t RealtimeEstimator::getElapsedRealtimeQtimer(int64_t qtimerTicksAtOrigin) {
     struct timespec currentTime = {};
     int64_t sinceBootTimeNanos = 0;
     int64_t elapsedRealTimeNanos = 0;
@@ -1118,12 +1122,14 @@ int64_t ElapsedRealtimeEstimator::getElapsedRealtimeQtimer(int64_t qtimerTicksAt
     return elapsedRealTimeNanos;
 }
 
-void ElapsedRealtimeEstimator::saveGpsTimeAndQtimerPairInPvtReport(
-        const GpsLocationExtended& locationExtended) {
+void RealtimeEstimator::saveGpsTimeAndQtimerPairInPvtReport(
+        const GpsLocationExtended& locationExtended,
+        enum loc_sess_status status) {
 
-    // Use GPS timestamp and qtimer tick for 1Hz PVT report for association
+    // Use GPS timestamp and qtimer tick for 1Hz PVT report or Final fixes for association
     if (locationExtended.isReportTimeAccurate() &&
-            (locationExtended.gnssSystemTime.u.gpsSystemTime.systemMsec % 1000 == 0)) {
+            ((locationExtended.gnssSystemTime.u.gpsSystemTime.systemMsec % 1000 == 0) ||
+             (LOC_SESS_SUCCESS == status))) {
         LOC_LOGv("save time association from PVT report with gps time %u %u, "
                  "qtimer %" PRIi64 " %f ",
                  locationExtended.gnssSystemTime.u.gpsSystemTime.systemWeek,
@@ -1138,7 +1144,7 @@ void ElapsedRealtimeEstimator::saveGpsTimeAndQtimerPairInPvtReport(
     }
 }
 
-void ElapsedRealtimeEstimator::saveGpsTimeAndQtimerPairInMeasReport(
+void RealtimeEstimator::saveGpsTimeAndQtimerPairInMeasReport(
         const GnssSvMeasurementSet& svMeasurementSet) {
 
     const GnssSvMeasurementHeader& svMeasSetHeader = svMeasurementSet.svMeasSetHeader;
@@ -1164,9 +1170,10 @@ void ElapsedRealtimeEstimator::saveGpsTimeAndQtimerPairInMeasReport(
         }
     }
 
-bool ElapsedRealtimeEstimator::getElapsedRealtimeForGpsTime(
+bool RealtimeEstimator::fillAdditionalTimestamps(
         const GpsLocationExtended& locationExtended,
-        int64_t &bootTimeNsAtOrigin, float & bootTimeUnc) {
+        int64_t &bootTimeNsAtOrigin, float &bootTimeUnc,
+        uint64_t &gptpTime, bool &gPTPValidity) {
     struct timespec curBootTime = {};
     int64_t curBootTimeNs = 0;
     int64_t curQTimerNSec = 0;
@@ -1211,13 +1218,20 @@ bool ElapsedRealtimeEstimator::getElapsedRealtimeForGpsTime(
     bootTimeNsAtOrigin = curBootTimeNs - (curQTimerNSec - qtimerNsecAtOrigin);
 
     bootTimeUnc = timePair.timeUncMsec;
+#ifdef PTP_SUPPORTED
+    if (gptpGetPtpTimeFromQTimeNs(&gptpTime, qtimerNsecAtOrigin)) {
+        gPTPValidity = true;
+    }
+#endif
+
     LOC_LOGv("gpsTimeAtOrigin (%d, %d), timepair: gps (%d, %d), "
              "qtimer nsec =%" PRIi64 ", curQTimerNSec=%" PRIi64 " qtimerNsecAtOrigin=%" PRIi64 ""
-             " curBoottimeNSec=%" PRIi64 " bootimeNsecAtOrigin=%" PRIi64 ", boottime unc =%f",
+             " curBoottimeNSec=%" PRIi64 " bootimeNsecAtOrigin=%" PRIi64 ", boottime unc =%f"
+             " gptp Time =%" PRIu64 " gPTPValidity = %d",
              gpsTimeAtOrigin.gpsWeek, gpsTimeAtOrigin.gpsTimeOfWeekMs,
              timePair.gpsTime.gpsWeek, timePair.gpsTime.gpsTimeOfWeekMs,
              timePairQtimerNsec, curQTimerNSec, qtimerNsecAtOrigin,
-             curBootTimeNs, bootTimeNsAtOrigin, bootTimeUnc);
+             curBootTimeNs, bootTimeNsAtOrigin, bootTimeUnc, gptpTime, gPTPValidity);
 
     if (bootTimeNsAtOrigin > 0) {
         return true;
@@ -1226,7 +1240,7 @@ bool ElapsedRealtimeEstimator::getElapsedRealtimeForGpsTime(
     }
 }
 
-bool ElapsedRealtimeEstimator::getCurrentTime(
+bool RealtimeEstimator::getCurrentTime(
         struct timespec& currentTime, int64_t& sinceBootTimeNanos)
 {
     struct timespec sinceBootTime = {};

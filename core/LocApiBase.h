@@ -30,7 +30,7 @@
  /*
  Changes from Qualcomm Innovation Center are provided under the following license:
 
- Copyright (c) 2022, 2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
 
  Redistribution and use in source and binary forms, with or without
  modification, are permitted (subject to the limitations in the
@@ -107,14 +107,12 @@ class LocAdapterBase;
 struct LocSsrMsg;
 struct LocOpenMsg;
 
-typedef struct
-{
+typedef struct {
     uint32_t accumulatedDistance;
     uint32_t numOfBatchedPositions;
 } LocApiBatchData;
 
-typedef struct
-{
+typedef struct {
     uint32_t hwId;
 } LocApiGeofenceData;
 
@@ -409,7 +407,7 @@ public:
     virtual void configOsnmaEnablement(bool enable, LocApiResponse* adapterResponse=nullptr);
 };
 
-class ElapsedRealtimeEstimator {
+class RealtimeEstimator {
     typedef struct {
         GPSTimeStruct gpsTime;
         int64_t qtimerTick;
@@ -430,7 +428,7 @@ private:
     GpsTimeQtimerTickPair mTimePairMeasReport;
 
 public:
-    inline ElapsedRealtimeEstimator(int64_t travelTimeNanosEstimate) :
+    inline RealtimeEstimator(int64_t travelTimeNanosEstimate) :
             mInitialTravelTime(travelTimeNanosEstimate) {
         reset();
     }
@@ -439,9 +437,11 @@ public:
     inline int64_t getElapsedRealtimeUncNanos() { return 5000000;}
     void reset();
     static int64_t getElapsedRealtimeQtimer(int64_t qtimerTicksAtOrigin);
-    bool getElapsedRealtimeForGpsTime(const GpsLocationExtended& locationExtended,
-                                      int64_t &elapsedTime, float & elpasedTimeUnc);
-    void saveGpsTimeAndQtimerPairInPvtReport(const GpsLocationExtended& locationExtended);
+    bool fillAdditionalTimestamps(const GpsLocationExtended& locationExtended,
+                                      int64_t &elapsedTime, float & elpasedTimeUnc,
+                                      uint64_t &gptpTime, bool &gPTPValidity);
+    void saveGpsTimeAndQtimerPairInPvtReport(const GpsLocationExtended& locationExtended,
+            enum loc_sess_status status);
     void saveGpsTimeAndQtimerPairInMeasReport(const GnssSvMeasurementSet& svMeasurementSet);
     static bool getCurrentTime(struct timespec& currentTime, int64_t& sinceBootTimeNanos);
 };

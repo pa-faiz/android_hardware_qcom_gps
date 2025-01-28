@@ -30,7 +30,7 @@
 /*
 Changes from Qualcomm Innovation Center are provided under the following license:
 
-Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted (subject to the limitations in the
@@ -155,14 +155,13 @@ public:
             GnssConfig gnssConfig = {};
             gnssConfig.size = sizeof(gnssConfig);
             gnssConfig.flags = GNSS_CONFIG_FLAGS_XTRA_STATUS_BIT;
-            sscanf(data, "%*s %d %d %d %d %d %63s", &sessionId, &updateType,
+            sscanf(data, "%*s %d %d %d %d %d %63s %d", &sessionId, &updateType,
                    (int *)&gnssConfig.xtraStatus.featureEnabled,
                    &gnssConfig.xtraStatus.xtraDataStatus,
                    &gnssConfig.xtraStatus.xtraValidForHours,
-                   &downloadReason[0]);
+                   &downloadReason[0], (int *)&gnssConfig.xtraStatus.userConsentStatus);
             std::string lastDownloadReason((char *) &downloadReason[0]);
             gnssConfig.xtraStatus.lastDownloadReasonCode = lastDownloadReason;
-
             mXSSO.mAdapter->reportGnssConfigEvent(sessionId, gnssConfig);
         } else if (!STRNCMP(data, "xtraMpDisabled")) {
             mXSSO.mAdapter->reportXtraMpDisabledEvent();
@@ -192,8 +191,12 @@ XtraSystemStatusObserver::XtraSystemStatusObserver(GnssAdapter* adapter,
         mRegisterForXtraStatus(false),
         mDelayLocTimer(*mXtraSender, *mDgnssSender) {
     subscribe(true);
+}
+
+void XtraSystemStatusObserver::init() {
+    locUtilWaitForDir(SOCKET_DIR_LOCATION);
     auto recver = LocIpc::getLocIpcLocalRecver(
-            make_shared<XtraIpcListener>(sysStatObs, msgTask, *this),
+            make_shared<XtraIpcListener>(mSystemStatusObsrvr, mMsgTask, *this),
             LOC_IPC_HAL);
     mIpc.startNonBlockingListening(recver);
     mDelayLocTimer.start(100 /*.1 sec*/,  false);
@@ -203,6 +206,14 @@ bool XtraSystemStatusObserver::updateLockStatus(GnssConfigGpsLock lock) {
     // mask NI(NFW bit) since from XTRA's standpoint GPS is enabled if
     // MO(AFW bit) is enabled and disabled when MO is disabled
     mGpsLock = lock & ~GNSS_CONFIG_GPS_LOCK_NFW_ALL;
+
+    if (ContextBase::mGps_conf.GNSS_DEPLOYMENT == PDS_API_ENABLED) {
+       mGpsLock = mGpsLock & ~GNSS_CONFIG_GPS_LOCK_MO;
+    }
+
+    LOC_LOGd("gnss deployment %d, in lock 0x%x, out lock 0x%x",
+             ContextBase::mGps_conf.GNSS_DEPLOYMENT, lock,
+             mGpsLock);
 
     if (!mReqStatusReceived) {
         return true;
@@ -619,4 +630,13 @@ void XtraSystemStatusObserver::notify(const unordered_set<IDataItemCore*>& dlist
         }
     };
     mMsgTask->sendMsg(new (nothrow) HandleOsObserverUpdateMsg(this, dlist));
+}
+
+bool XtraSystemStatusObserver::updateXtraUserConsent(bool userConsent){
+    stringstream ss;
+    ss << "XtraEndUserConsent" << endl;
+    ss << (userConsent ? 1 : 0) << endl;
+    string s = ss.str();
+    LOC_LOGd("XtraEndUserConsent: %s", s.c_str());
+    return ( LocIpc::send(*mXtraSender, (const uint8_t*)s.data(), s.size()) );
 }
